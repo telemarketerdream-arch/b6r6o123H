@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud Browser</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:system-ui,sans-serif}
+  body{display:flex;flex-direction:column;background:#1a1a1a;color:#ddd}
+  #bar{display:flex;gap:6px;padding:8px;background:#222;align-items:center}
+  #bar button{padding:6px 10px;background:#333;color:#ddd;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:13px;line-height:1}
+  #bar button:hover{background:#444}
+  #addr{flex:1;padding:8px 10px;border:1px solid #444;border-radius:4px;background:#111;color:#eee;font-size:14px;outline:none;min-width:0}
+  #addr:focus{border-color:#4a9eff}
+  #go{background:#4a9eff!important;color:#fff!important;border-color:#4a9eff!important}
+  #status{color:#888;font-size:12px;min-width:70px;text-align:right}
+  iframe{flex:1;border:none;width:100%;background:#fff}
+  #setup{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#111;padding:20px}
+  #setup .card{background:#1e1e1e;border:1px solid #333;border-radius:10px;padding:24px;max-width:520px;width:100%}
+  #setup h2{margin:0 0 8px;font-size:18px;color:#fff}
+  #setup p{margin:0 0 16px;color:#aaa;font-size:14px;line-height:1.5}
+  #setup input{width:100%;padding:10px;background:#0d0d0d;border:1px solid #444;border-radius:6px;color:#eee;font-size:14px;margin-bottom:10px}
+  #setup button{width:100%;padding:10px;background:#4a9eff;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600}
+  #setup .hint{font-size:12px;color:#777;margin-top:10px;line-height:1.5}
+  #setup .hint code{background:#0d0d0d;padding:2px 5px;border-radius:3px;color:#7cb4ff}
+</style>
+</head>
+<body>
+
+<div id="setup" style="display:none">
+  <div class="card">
+    <h2>Connect your proxy</h2>
+    <p>Enter the URL of your Cloudflare Worker (the one that serves this page and handles <code>/p</code>).</p>
+    <input id="setupInput" placeholder="https://your-worker.workers.dev" autocomplete="off" spellcheck="false">
+    <button id="setupBtn">Save & launch</button>
+    <div class="hint">Only the origin is used. Saved to localStorage on this browser.</div>
+  </div>
+</div>
+
+<div id="bar">
+  <button id="back" title="Back">&#9664;</button>
+  <button id="fwd" title="Forward">&#9654;</button>
+  <button id="reload" title="Reload">&#8635;</button>
+  <input id="addr" placeholder="Search or enter address" autocomplete="off" spellcheck="false">
+  <button id="go">Go</button>
+  <button id="ext" title="Open real URL">&#8599;</button>
+  <button id="cfg" title="Change proxy">&#9881;</button>
+  <span id="status"></span>
+</div>
+<iframe id="frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals"></iframe>
+
+<script>
+(function(){
+  var PATH = '/p';
+  var START = 'https://html.duckduckgo.com/html/';
+  var LS_KEY = 'cloudbrowser.proxyOrigin';
+
+  var addr = document.getElementById('addr');
+  var frame = document.getElementById('frame');
+  var statusEl = document.getElementById('status');
+  var setup = document.getElementById('setup');
+  var setupInput = document.getElementById('setupInput');
+
+  var proxyOrigin = null;
+  var hist = [], idx = -1, current = '';
+
+  function detectProxy(){
+    var q = new URLSearchParams(location.search).get('proxy');
+    if (q) return normalizeOrigin(q);
+    try {
+      var saved = localStorage.getItem(LS_KEY);
+      if (saved) return saved;
+    } catch(e){}
+    if (location.protocol === 'https:' || location.protocol === 'http:'){
+      var h = location.hostname;
+      if (!/cdn\.jsdelivr\.net$|^cdnjs\.|^unpkg\.com$|\.github\.io$|^raw\.githubusercontent\.com$|^gist\.githubusercontent\.com$/.test(h)){
+        return location.origin;
+      }
+    }
+    return null;
+  }
+
+  function normalizeOrigin(s){
+    try { return new URL(s).origin; } catch(e){ return null; }
+  }
+
+  function proxyURL(u){ return proxyOrigin + PATH + '?url=' + encodeURIComponent(u); }
+
+  function showSetup(){
+    setup.style.display = 'flex';
+    setupInput.value = proxyOrigin || '';
+    setupInput.focus();
+  }
+  function hideSetup(){ setup.style.display = 'none'; }
+
+  document.getElementById('setupBtn').onclick = function(){
+    var o = normalizeOrigin(setupInput.value.trim());
+    if (!o){ setupInput.style.borderColor = '#ff5555'; return; }
+    proxyOrigin = o;
+    try { localStorage.setItem(LS_KEY, o); } catch(e){}
+    hideSetup();
+    go(START);
+  };
+  setupInput.addEventListener('keydown', function(e){
+    if (e.key === 'Enter') document.getElementById('setupBtn').click();
+  });
+
+  document.getElementById('cfg').onclick = function(){
+    try { localStorage.removeItem(LS_KEY); } catch(e){}
+    proxyOrigin = detectProxy();
+    showSetup();
+  };
+
+  function looksLikeURL(s){
+    if (/^https?:\/\//i.test(s)) return true;
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/.*)?$/i.test(s)) return true;
+    return false;
+  }
+
+  function go(input, push){
+    if (!proxyOrigin){ showSetup(); return; }
+    var u = String(input || '').trim();
+    if (!u) return;
+    if (!looksLikeURL(u)){
+      u = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(u);
+    } else if (!/^https?:\/\//i.test(u)){
+      u = 'https://' + u;
+    }
+    if (push !== false){
+      hist.splice(idx + 1);
+      hist.push(u);
+      idx = hist.length - 1;
+    }
+    current = u;
+    addr.value = u;
+    statusEl.textContent = 'loading';
+    frame.src = proxyURL(u);
+  }
+
+  document.getElementById('go').onclick = function(){ go(addr.value); };
+  document.getElementById('reload').onclick = function(){ if (current) go(current, false); };
+  document.getElementById('back').onclick = function(){ if (idx > 0) go(hist[--idx], false); };
+  document.getElementById('fwd').onclick = function(){ if (idx < hist.length - 1) go(hist[++idx], false); };
+  document.getElementById('ext').onclick = function(){ if (current) window.open(current, '_blank', 'noopener'); };
+
+  addr.addEventListener('keydown', function(e){ if (e.key === 'Enter') go(addr.value); });
+  frame.addEventListener('load', function(){ statusEl.textContent = ''; });
+
+  window.addEventListener('message', function(e){
+    if (e.data && e.data.type === 'url' && typeof e.data.url === 'string'){
+      current = e.data.url;
+      addr.value = e.data.url;
+      statusEl.textContent = '';
+    }
+  });
+
+  proxyOrigin = detectProxy();
+  if (proxyOrigin){
+    go(START);
+  } else {
+    showSetup();
+  }
+})();
+</script>
+</body>
+</html>
